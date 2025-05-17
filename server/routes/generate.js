@@ -47,24 +47,26 @@ router.post("/", async (req, res) => {
     };
     generatedFiles.set(filename, fileInfo);
 
-    // Get local URL
-    const localUrl = `/api/download/${filename}`;
+    // Get local URL (using absolute URL)
+    const localUrl = `http://localhost:3001/api/download/${filename}`;
 
-    // Try to upload to Firebase in the background
-    try {
-      console.log("Attempting to save audio to Firebase:", filename);
-      const file = bucket.file(filename);
-      await file.save(audioBuffer, { contentType: "audio/mpeg" });
-      await file.makePublic();
-      const firebaseUrl = `https://storage.googleapis.com/${bucket.name}/${filename}`;
-      console.log("Audio uploaded to Firebase:", firebaseUrl);
+    // Try to upload to Firebase in the background (optional)
+    if (process.env.FIREBASE_STORAGE_BUCKET) {
+      try {
+        console.log("Attempting to save audio to Firebase:", filename);
+        const file = bucket.file(filename);
+        await file.save(audioBuffer, { contentType: "audio/mpeg" });
+        await file.makePublic();
+        const firebaseUrl = `https://storage.googleapis.com/${bucket.name}/${filename}`;
+        console.log("Audio uploaded to Firebase:", firebaseUrl);
 
-      // Update file info with Firebase URL
-      fileInfo.firebaseUrl = firebaseUrl;
-      generatedFiles.set(filename, fileInfo);
-    } catch (firebaseError) {
-      console.error("Firebase upload failed:", firebaseError);
-      // Continue with local file only
+        // Update file info with Firebase URL
+        fileInfo.firebaseUrl = firebaseUrl;
+        generatedFiles.set(filename, fileInfo);
+      } catch (firebaseError) {
+        console.error("Firebase upload failed:", firebaseError);
+        // Continue with local file only
+      }
     }
 
     res.json({
@@ -97,12 +99,33 @@ router.get("/download/:filename", (req, res) => {
     return res.status(404).json({ error: "File not found on server" });
   }
 
-  res.download(filePath, filename, (err) => {
-    if (err) {
-      console.error("Download error:", err);
-      res.status(500).json({ error: "Error downloading file" });
+  // Set proper headers for audio file
+  res.setHeader("Content-Type", "audio/mpeg");
+  res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+
+  // Stream the file instead of using res.download
+  const fileStream = fs.createReadStream(filePath);
+  fileStream.pipe(res);
+
+  fileStream.on("error", (error) => {
+    console.error("Stream error:", error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Error streaming file" });
     }
   });
+});
+
+// List available audio files
+router.get("/files", (req, res) => {
+  const files = Array.from(generatedFiles.values()).map((fileInfo) => ({
+    filename: fileInfo.filename,
+    topic: fileInfo.topic,
+    createdAt: fileInfo.createdAt,
+    url: `http://localhost:3001/api/download/${fileInfo.filename}`,
+    firebaseUrl: fileInfo.firebaseUrl,
+  }));
+
+  res.json({ files });
 });
 
 // Cleanup old files (optional)
